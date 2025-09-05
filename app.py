@@ -106,6 +106,14 @@ def download_file(filename):
 def result():
     return render_template('result.html')
 
+@app.route('/sitemap.xml')
+def sitemap():
+    return send_file('static/sitemap.xml', mimetype='application/xml')
+
+@app.route('/robots.txt')
+def robots():
+    return send_file('static/robots.txt', mimetype='text/plain')
+
 if __name__ == '__main__':
     os.makedirs(UPLOAD_FOLDER, exist_ok=True)
     os.makedirs(COMPRESSED_FOLDER, exist_ok=True)
