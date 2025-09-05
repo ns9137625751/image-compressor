@@ -1,95 +1,112 @@
-from flask import Flask, request, render_template, send_file, jsonify
+from flask import Flask, request, render_template, send_file, flash, redirect, url_for, jsonify
 from PIL import Image
-from werkzeug.utils import secure_filename
-from io import BytesIO
 import os
+from werkzeug.utils import secure_filename
 import uuid
 
 app = Flask(__name__)
 app.secret_key = 'your-secret-key-here'
 
+UPLOAD_FOLDER = 'static/uploads'
+COMPRESSED_FOLDER = 'static/compressed'
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp'}
-MAX_FILE_SIZE = 16 * 1024 * 1024  # 16 MB
 
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['COMPRESSED_FOLDER'] = COMPRESSED_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+def compress_image(input_path, output_path, quality):
+    with Image.open(input_path) as img:
+        # Convert RGBA to RGB if necessary
+        if img.mode in ('RGBA', 'LA', 'P'):
+            img = img.convert('RGB')
+        img.save(output_path, 'JPEG', quality=quality, optimize=True)
 
 @app.route('/')
 def index():
     return render_template('index.html')
 
-
 @app.route('/upload', methods=['POST'])
 def upload_file():
     if 'file' not in request.files:
         return jsonify({'error': 'No file selected'})
-
+    
     file = request.files['file']
-
+    
     if file.filename == '':
         return jsonify({'error': 'No file selected'})
-
+    
     if file and allowed_file(file.filename):
-        original_filename = secure_filename(file.filename)
+        # Generate unique filename
         unique_id = str(uuid.uuid4())
+        original_filename = secure_filename(file.filename)
         filename = f"{unique_id}_{original_filename}"
-
-        # Save in memory buffer
-        file_bytes = file.read()
-        if len(file_bytes) > MAX_FILE_SIZE:
-            return jsonify({'error': 'File too large (max 16 MB)'})
-
+        
+        # Save original file
+        original_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(original_path)
+        
+        # Get original file size
+        original_size = os.path.getsize(original_path)
+        
         return jsonify({
             'success': True,
-            'filename': filename,
             'original_filename': original_filename,
-            'original_size': round(len(file_bytes) / 1024, 2)  # in KB
+            'filename': filename,
+            'original_size': round(original_size / 1024, 2),
+            'original_path': f"uploads/{filename}"
         })
     else:
         return jsonify({'error': 'Invalid file type. Please upload an image file.'})
 
-
 @app.route('/compress', methods=['POST'])
 def compress_file():
-    file = request.files.get('file')
-    compression_level = int(request.form.get('compression', 85))
-
-    if not file:
-        return jsonify({'error': 'No file uploaded'})
-
-    if not allowed_file(file.filename):
-        return jsonify({'error': 'Invalid file type'})
-
+    data = request.get_json()
+    filename = data.get('filename')
+    compression_level = int(data.get('compression', 85))
+    
+    if not filename:
+        return jsonify({'error': 'No filename provided'})
+    
+    original_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    
+    if not os.path.exists(original_path):
+        return jsonify({'error': 'Original file not found'})
+    
+    # Compress image
+    compressed_filename = f"compressed_{filename.rsplit('.', 1)[0]}.jpg"
+    compressed_path = os.path.join(app.config['COMPRESSED_FOLDER'], compressed_filename)
+    
     try:
-        img = Image.open(file)
-
-        # Convert transparent formats to RGB
-        if img.mode in ('RGBA', 'LA', 'P'):
-            img = img.convert('RGB')
-
-        buf = BytesIO()
-        img.save(buf, "JPEG", quality=compression_level, optimize=True)
-        buf.seek(0)
-
-        compressed_size = round(len(buf.getvalue()) / 1024, 2)  # in KB
-
-        return send_file(
-            buf,
-            mimetype="image/jpeg",
-            as_attachment=True,
-            download_name=f"compressed_{secure_filename(file.filename)}"
-        )
-
+        compress_image(original_path, compressed_path, compression_level)
+        
+        # Get file sizes
+        original_size = os.path.getsize(original_path)
+        compressed_size = os.path.getsize(compressed_path)
+        reduction_percent = ((original_size - compressed_size) / original_size) * 100
+        
+        return jsonify({
+            'success': True,
+            'compressed_path': f"compressed/{compressed_filename}",
+            'compressed_size': round(compressed_size / 1024, 2),
+            'reduction_percent': round(reduction_percent, 2),
+            'compressed_filename': compressed_filename
+        })
     except Exception as e:
         return jsonify({'error': f'Error compressing image: {str(e)}'})
 
+@app.route('/download/<filename>')
+def download_file(filename):
+    return send_file(os.path.join(app.config['COMPRESSED_FOLDER'], filename), as_attachment=True)
 
 @app.route('/result')
 def result():
     return render_template('result.html')
 
-
 if __name__ == '__main__':
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+    os.makedirs(COMPRESSED_FOLDER, exist_ok=True)
+    app.run(debug=True)
